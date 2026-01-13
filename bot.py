@@ -1,131 +1,143 @@
-import logging  # Импортируем модуль для логирования
-import asyncio  # Импортируем модуль для асинхронного программирования
-from datetime import datetime, timedelta  # Импортируем классы для работы с датой и временем
-from telegram import Bot  # Импортируем класс Bot из библиотеки Telegram
-from telegram.ext import ApplicationBuilder  # Импортируем ApplicationBuilder для создания приложения Telegram
-from apscheduler.schedulers.asyncio import AsyncIOScheduler  # Импортируем планировщик задач для асинхронных задач
-from apscheduler.triggers.cron import CronTrigger  # Импортируем триггер для запуска задач по расписанию
-from apscheduler.events import EVENT_JOB_MISSED  # Импортируем событие пропуска задачи
-import pytz  # Импортируем модуль для работы с часовыми поясами
-from config import BOT_TOKEN, CHANNEL_CHAT_ID  # Импортируем токен бота и ID канала из конфигурационного файла
+import logging
+import asyncio
+from datetime import datetime, timedelta
+from telegram import Bot
+from telegram.ext import ApplicationBuilder
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.events import EVENT_JOB_MISSED
+import pytz
+from config import BOT_TOKEN, CHANNEL_CHAT_ID
 
-# Настройка логирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # Формат логов: время, имя, уровень, сообщение
-    level=logging.INFO  # Устанавливаем уровень логирования на INFO (только важные события)
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)  # Отключаем детальные логи HTTP-запросов
-logger = logging.getLogger(__name__)  # Создаем объект логгера для текущего модуля
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN)  # Создаем экземпляр бота с использованием токена
+bot = Bot(token=BOT_TOKEN)
 
-# Глобальные переменные для управления количеством попыток
-is_sent_successfully = False  # Флаг успешной отправки сообщения
+is_sent_successfully = False
 max_attempts = 30  # Максимальное количество попыток отправки сообщения
 
-
-# Функция для отправки сообщения о прогрессе
 async def send_progress_message(bot_instance: Bot) -> bool:
-    global is_sent_successfully  # Объявляем глобальную переменную для флага успешной отправки
-    today = datetime.now()  # Получаем текущую дату и время
-    start_of_year = datetime(today.year, 1, 1)  # Определяем начало года
-    end_of_year = datetime(today.year + 1, 1, 1)  # Определяем начало следующего года
-    total_days = (end_of_year - start_of_year).days  # Вычисляем общее количество дней в году
-    completed_days = (today - start_of_year).days  # Вычисляем количество прошедших дней с начала года
-    percent = round((completed_days / total_days) * 100, 2)  # Вычисляем процент завершения года
+    global is_sent_successfully
+    today = datetime.now()
+    start_of_year = datetime(today.year, 1, 1)
+    end_of_year = datetime(today.year + 1, 1, 1)
+    total_days = (end_of_year - start_of_year).days
+    completed_days = (today - start_of_year).days
+    percent = round((completed_days / total_days) * 100, 2)
     progress_bar_length = 12  # Длина прогресс-бара
-    filled_length = int(progress_bar_length * completed_days // total_days)  # Вычисляем заполненную часть прогресс-бара
-    bar = '▓' * filled_length + '░' * (progress_bar_length - filled_length)  # Создаем строку прогресс-бара
+    filled_length = int(progress_bar_length * completed_days // total_days)
+    bar = '▓' * filled_length + '░' * (progress_bar_length - filled_length)
     message = f"{bar} {percent:.2f}%"  # Формируем текст сообщения
 
     try:
-        logger.debug("Starting send_message call...")  # Логируем начало отправки сообщения
-        start_time = datetime.now()  # Записываем время начала отправки
-        await bot_instance.send_message(chat_id=CHANNEL_CHAT_ID, text=message)  # Отправляем сообщение в канал
-        end_time = datetime.now()  # Записываем время окончания отправки
-        duration = (end_time - start_time).total_seconds()  # Вычисляем время выполнения отправки
-        logger.info(f"Message sent successfully in {duration:.4f} seconds.")  # Логируем успешную отправку
-        is_sent_successfully = True  # Устанавливаем флаг успешной отправки
+        logger.debug("Попытка отправки сообщения")
+        start_time = datetime.now()
+        await bot_instance.send_message(chat_id=CHANNEL_CHAT_ID, text=message)
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        logger.info(f"Сообщение успешно отправлено за {duration:.4f} секунд")
+        is_sent_successfully = True
     except Exception as e:
-        logger.exception(f"Failed to send message: {e}")  # Логируем ошибку отправки
-        is_sent_successfully = False  # Сбрасываем флаг успешной отправки
-    return is_sent_successfully  # Возвращаем результат отправки
+        logger.exception(f"Ошибка отправки сообщения: {e}")
+        is_sent_successfully = False
+    return is_sent_successfully
 
 # Проверка часового пояса
 def log_timezone():
     server_timezone = datetime.now(pytz.timezone('Europe/Moscow')).strftime(
         '%Z %z')  # Получаем текущий часовой пояс сервера
-    logger.info(f"Server timezone: {server_timezone}")  # Логируем часовой пояс
+    logger.info(f"Часовой пояс сервера: {server_timezone}")  # Логируем часовой пояс
 
-
-# Планировщик задач
 def setup_scheduler(scheduler: AsyncIOScheduler, bot_instance: Bot) -> None:
     async def scheduled_send_progress_message():
-        global is_sent_successfully  # Объявляем глобальную переменную для флага успешной отправки
-        attempts = 0  # Счетчик попыток отправки
-        while attempts < max_attempts:  # Цикл повторных попыток отправки
-            attempts += 1  # Увеличиваем счетчик попыток
-            logger.debug(f"Scheduled job starting... Attempt #{attempts}")  # Логируем начало попытки
+        # Проверяем, является ли сегодняшняя дата 1 января
+        today_date = datetime.now().date()
+        if today_date.month == 1 and today_date.day == 1:
+            logger.info("Пропуск ежедневного сообщения о прогрессе 1 января")
+            return  # Пропускаем выполнение для 1 января
 
-            result = await send_progress_message(bot_instance)  # Выполняем отправку сообщения
-            if result:  # Если отправка успешна
-                logger.info("Message sent successfully.")  # Логируем успех
-                break  # Выходим из цикла
-            else:  # Если отправка не удалась
-                logger.warning(f"Attempt #{attempts} failed. Retrying in 10 seconds...")  # Логируем неудачу
-                await asyncio.sleep(10)  # Ждем 10 секунд перед следующей попыткой
-        else:  # Если все попытки исчерпаны
-            logger.error(f"Max retries exceeded ({max_attempts}) without success.")  # Логируем ошибку
+        global is_sent_successfully
+        attempts = 0
+        while attempts < max_attempts:
+            attempts += 1
+            logger.debug(f"Запуск задачи по расписанию. Попытка #{attempts}")
 
-    # Логируем часовой пояс при инициализации
+            result = await send_progress_message(bot_instance)
+            if result:
+                logger.info("Сообщение успешно отправлено")
+                break
+            else:
+                logger.warning(f"Попытка #{attempts} не удалась. Повтор через 10 секунд...")
+                await asyncio.sleep(10)
+        else:
+            logger.error(f"Превышено максимальное количество попыток ({max_attempts})")
+
+    # Функция для отправки специального сообщения 1 января в 00:00
+    async def send_new_year_progress():
+        message = "████████████ 100%"
+        try:
+            await bot_instance.send_message(chat_id=CHANNEL_CHAT_ID, text=message)
+            logger.info("Новогоднее сообщение успешно отправлено")
+        except Exception as e:
+            logger.exception(f"Не удалось отправить новогоднее сообщение: {e}")
+
     log_timezone()
 
-    # Определяем время первого запуска
-    now = datetime.now()  # Получаем текущее время
-    first_run_time = now.replace(hour=8, minute=0, second=0,
-                                 microsecond=0)  # Устанавливаем время первого запуска на 8:00
-    if now.hour >= 8:  # Если текущее время уже после 8:00
-        first_run_time += timedelta(days=1)  # Переносим первый запуск на следующий день
+    # Определяем время первого запуска для ежедневной задачи (начиная с 2 января)
+    now = datetime.now()
+    first_run_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
 
-    # Добавляем задачу с параметрами misfire_grace_time и coalesce
+    if now.date().month == 1 and now.date().day == 1:
+        first_run_time = datetime(now.year, 1, 2, 8, 0, 0)
+    elif now.hour >= 8:
+        first_run_time += timedelta(days=1)
+        if first_run_time.date().month == 1 and first_run_time.date().day == 1:
+            first_run_time += timedelta(days=1)
+
     scheduler.add_job(
-        scheduled_send_progress_message,  # Функция для выполнения
-        CronTrigger(day_of_week='mon-sun', hour="8", minute="0"),  # Триггер для ежедневного запуска в 8:00
-        next_run_time=first_run_time,  # Время первого запуска
-        misfire_grace_time=60,  # Допустимое время пропуска (60 секунд)
-        coalesce=True  # Объединение пропущенных запусков
+        scheduled_send_progress_message,
+        CronTrigger(day_of_week='mon-sun', hour="8", minute="0"),
+        next_run_time=first_run_time,
+        misfire_grace_time=60,
+        coalesce=True
     )
 
-    # Логируем запланированное время старта
-    date_str = first_run_time.strftime("%Y-%m-%d")  # Форматируем дату
-    time_str = first_run_time.strftime("%H:%M:%S")  # Форматируем время
-    formatted_datetime = f"{date_str} в {time_str}"  # Комбинируем дату и время
-    logger.info(f"First message will be sent at {formatted_datetime}.")  # Логируем время первого запуска
+    scheduler.add_job(
+        send_new_year_progress,
+        CronTrigger(month='1', day='1', hour='0', minute='0'),
+        id='new_year_message',
+        replace_existing=True
+    )
+    logger.info("Запланировано специальное новогоднее сообщение на 1 января в 00:00")
 
-    # Логируем события пропуска задач
+    date_str = first_run_time.strftime("%Y-%m-%d")
+    time_str = first_run_time.strftime("%H:%M:%S")
+    formatted_datetime = f"{date_str} в {time_str}"
+    logger.info(f"Первое ежедневное сообщение будет отправлено {formatted_datetime}.")
+
     scheduler.add_listener(
-        lambda event: logger.warning(f"Misfire detected: {event}"),  # Логируем событие пропуска задачи
-        EVENT_JOB_MISSED  # Слушаем событие пропуска задачи
+        lambda event: logger.warning(f"Задача пропущена: {event}"),
+        EVENT_JOB_MISSED
     )
 
-
-# Главная функция
 async def main():
-    app_builder = ApplicationBuilder().token(BOT_TOKEN)  # Создаем билдер приложения с токеном бота
-    app = app_builder.build()  # Строим приложение
+    app_builder = ApplicationBuilder().token(BOT_TOKEN)
+    app = app_builder.build()
 
-    # Запуск планировщика
-    scheduler = AsyncIOScheduler()  # Создаем планировщик задач
-    setup_scheduler(scheduler, bot)  # Настраиваем планировщик
-    scheduler.start()  # Запускаем планировщик
+    scheduler = AsyncIOScheduler()
+    setup_scheduler(scheduler, bot)
+    scheduler.start()
 
-    # Запуск бота
-    await app.initialize()  # Инициализируем приложение
-    await app.start()  # Запускаем приложение
-    print("Bot started!")  # Выводим сообщение о запуске бота
-    while True:  # Бесконечный цикл для поддержания работы бота
-        await asyncio.sleep(3600)  # Пауза каждые 60 минут
-
+    await app.initialize()
+    await app.start()
+    print("Бот запущен")
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(main())  # Запускаем главную функцию
+    asyncio.run(main())
